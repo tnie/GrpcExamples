@@ -7,16 +7,10 @@
 仔细阅读 [CMakeLists.txt][cm]：
 
 > This branch ~~assumes~~ **requires** gRPC and all its dependencies are already installed on this system, so they can be located by find_package().
-> 
-> # ${_GRPC_GRPCPP_UNSECURE}	# 引入此库会莫名出错
-
-fixbug xxx_unsecure.lib 库不能随意引用，原因未知。只知道加上不对，删了通信就能成功。
-
 
 - 在同一接口 read 未返回之前再次 read ，client 崩溃
 - hello-server 写两次时，async-client demo 根本就处理不了
 - 调试 grpc 心跳机制，调试其联网状态
-
 
 [1]:https://github.com/tnie/quote-demo/issues/9
 [2]:https://github.com/grpc/grpc/issues/9593#issuecomment-277946137
