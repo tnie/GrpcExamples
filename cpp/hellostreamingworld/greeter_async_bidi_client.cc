@@ -66,13 +66,9 @@ class AsyncBidiGreeterClient {
       : stub_(MultiGreeter::NewStub(channel)) {
     grpc_thread_.reset(
         new std::thread(std::bind(&AsyncBidiGreeterClient::GrpcThread, this)));
-    /*stream_ = stub_->AsyncSayHello(&context_, &cq_,
-                                   reinterpret_cast<void*>(Type::CONNECT));*/
+    //stream_ = stub_->AsyncSayHello(&context_, &cq_, reinterpret_cast<void*>(Type::CONNECT));
     stream_ = stub_->PrepareAsyncSayHello(&context_, &cq_);
     stream_->StartCall(reinterpret_cast<void*>(Type::CONNECT));
-    // TODO 以下两句不需要吧？
-    /*Status status;
-    stream_->Finish(&status, reinterpret_cast<void*>(Type::CONNECT));*/
   }
 
   // Similar to the async hello example in greeter_async_client but does not
@@ -147,12 +143,12 @@ class AsyncBidiGreeterClient {
         switch (static_cast<Type>(reinterpret_cast<long>(got_tag))) {
           case Type::READ:
             std::cout << "Read a new message." << std::endl;
-            std::cout << " ** Got response: " << response_.message() << std::endl;  // TODO right?
+            std::cout << " ** Got response: " << response_.message() << std::endl;
 
             break;
           case Type::WRITE:
             std::cout << "Sending message (async)." << std::endl;
-            AsyncHelloRequestNextMessage();  // TODO 有什么用？
+            AsyncHelloRequestNextMessage();  // 原作者自我设限，写一次读一次……读写一对一，不能多对多
             break;
           case Type::CONNECT:
             std::cout << "Server connected." << std::endl;
@@ -171,6 +167,11 @@ class AsyncBidiGreeterClient {
             std::cerr << "Unexpected tag " << got_tag << std::endl;
             assert(false);
         }
+      }
+      else
+      {
+          std::cerr << "** Got false when handling tag " << got_tag << std::endl;
+          stream_->Finish(&finish_status_, reinterpret_cast<void*>(Type::FINISH));
       }
     }
   }
