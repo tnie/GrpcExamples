@@ -1,6 +1,6 @@
 # hellostreamingworld
 
-此双向流 & 异步的 demo 摘自：https://github.com/perumaalgoog/grpc/tree/perugrpc
+此双向流 & 异步的 demo 摘自：https://github.com/perumaalgoog/grpc/tree/perugrpc , commit b52b3362d6805daf04a587d26d19e906559192fc the latest release at 2021年2月23日。略有改动。
 
 通过 vcpkg 使用 grpc 库。
 
