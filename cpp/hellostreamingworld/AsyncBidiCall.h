@@ -141,6 +141,8 @@ inline void set_dummy(HelloRequest& request) // set request un idle indicating u
 class AsyncBidiCall final : public AsyncClientCall
 {
     enum CallStatus state = CREATE;
+    enum class WriteState { IDLE, WRITING, STOP };
+    WriteState wrt_state_ = WriteState::STOP;
     typedef typename std::string LabelT;
     typedef typename HelloReply ReturnT;
     typedef typename HelloRequest RequestT;
@@ -151,7 +153,7 @@ class AsyncBidiCall final : public AsyncClientCall
     std::weak_ptr<MultiGreeter::Stub> stub_wptr_;
     //
     RequestT request_;
-    std::queue<RequestT> requests_;
+    std::queue<RequestT> request_buffer_;
     std::atomic<int> ref_count_ = 0;    // count of outstanding op, use zero value when finish()
 
     static void callback(const ReturnT& from)
@@ -195,7 +197,7 @@ public:
         if (!v2.name().empty() /*有效性校验*/)
         {
             std::unique_lock<std::mutex> lg(mt_);
-            if (writable())  //writable, /wait CREATE event
+            if (WriteState::IDLE == wrt_state_)  //writable, /wait CREATE event
             {
                 request_.Swap(&v2);
                 // 三合一操作
@@ -204,7 +206,7 @@ public:
             }
             else
             {
-                requests_.push(v2);
+                request_buffer_.push(v2);
             }
         }
     }
@@ -222,23 +224,24 @@ public:
         case AsyncClientCall::CREATE:
             if (eventStatus)
             {
-                std::unique_lock<std::mutex> lg2(mt_);
                 constexpr auto second3s = std::chrono::seconds(3);
-                while (!cv_.wait_for(lg2, second3s, [this]() { return (nullptr != rpc_); }))
+                std::unique_lock<std::mutex> lg(mt_);
+                while (!cv_.wait_for(lg, second3s, [this]() { return (nullptr != rpc_); }))
                 {
                     spdlog::warn("Waiting for `rpc_[{}]` assignment. {}:{}", typeid(*this).name(), __FILE__, __LINE__);
                 }
                 state = AsyncClientCall::PROCESS;
-                if (requests_.empty())
+                if (request_buffer_.empty())
                 {
-                    request_.Clear();   // make writable
+                    wrt_state_ = WriteState::IDLE;   // make writable
                 }
                 else
                 {
                     // 针对在 CREATE 期间入队列的个例
-                    request_.Swap(&requests_.front());
-                    requests_.pop();
+                    request_.Swap(&request_buffer_.front());
+                    request_buffer_.pop();
                     ref_count_ += 1;
+                    wrt_state_ = WriteState::WRITING;
                     rpc_->Write(request_, this);
                 }
                 ref_count_ += 1;
@@ -258,15 +261,16 @@ public:
                 if (is_dummy(reply_))   // 若 reply_ 未变更，则此次返回对应 rpc_->Write()
                 {
                     std::lock_guard<std::mutex> lg(mt_);
-                    if (requests_.empty())
+                    if (request_buffer_.empty())
                     {
-                        request_.Clear();   // make writable
+                        wrt_state_ = WriteState::IDLE;   // make writable
                     }
                     else
                     {
-                        request_.Swap(&requests_.front());
-                        requests_.pop();
+                        request_.Swap(&request_buffer_.front());
+                        request_buffer_.pop();
                         ref_count_ += 1;
+                        wrt_state_ = WriteState::WRITING;
                         rpc_->Write(request_, this);
                     }
                 }
@@ -279,7 +283,9 @@ public:
                     rpc_->Read(&reply_, this);
                 }
             }
-            else if (ref_count_ == 0)
+            //顺序读，顺序写，在单一 rpc 上读写可同时存在。如果我们约定读写也顺序，
+            //就会存在 outstanding read 长时间不返回，我们也不能写的困境。
+            else if (ref_count_ == 0)   // 区分不出此返回对应的 rpc->write() 还是 rpc->read()
             {
                 std::lock_guard<std::mutex> lg(mt_);
                 set_dummy(request_);
@@ -351,7 +357,7 @@ public:
             case GRPC_CHANNEL_TRANSIENT_FAILURE:
                 spdlog::warn("channel has seen a failure but expects to recover");
                 break;
-            case GRPC_CHANNEL_SHUTDOWN:
+            case GRPC_CHANNEL_SHUTDOWN: // TODO shutdown 之后不应再调用 NotifyOnStateChange，但没有找到方法 shutdown channel
                 spdlog::error("channel has seen a failure that it cannot recover from");
                 break;
             default:

@@ -31,6 +31,7 @@
  *
  */
 
+#include <thread>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -84,6 +85,12 @@ class AsyncBidiGreeterClient {
   }
 
   ~AsyncBidiGreeterClient() {
+      AsyncClientCall::closeAll();
+      // 等待上述（异步的）关闭操作正式完成，避免 Shutdown() 之后再向 cq_ 插入新的 event（造成崩溃）
+      while (!AsyncClientCall::empty())
+      {
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
     std::cout << "Shutting down client...." << std::endl;
     cq_.Shutdown();
     grpc_thread_->join();
@@ -134,7 +141,7 @@ int main(int argc, char** argv) {
     std::cin >> text;
 
     // Async RPC call that sends a message and awaits a response.
-    if (!greeter.AsyncSayHello(text)) {
+    if (!greeter.AsyncSayHello(text) || text == "quit") {
       std::cout << "Quitting." << std::endl;
       break;
     }
