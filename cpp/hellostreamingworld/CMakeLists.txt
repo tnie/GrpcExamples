@@ -104,7 +104,8 @@ include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 # Targets greeter_[async_](client|server)
 foreach(_target
   greeter_bidi_client greeter_bidi_server 
-  greeter_async_bidi_client greeter_async_bidi_server)
+  greeter_async_bidi_client greeter_async_bidi_server
+  greeter_async_bidi_client2)
   add_executable(${_target} "${_target}.cc"
     ${hw_proto_srcs}
     ${hw_grpc_srcs})
