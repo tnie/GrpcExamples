@@ -76,9 +76,8 @@ class AsyncBidiGreeterClient {
       if (0 == AsyncBidiCall::instance_count_)
       {
           call_ = new AsyncBidiCall(stub_);
-          auto rpc = stub_->PrepareAsyncSayHello(&call_->context(), &cq_);
-          rpc->StartCall(reinterpret_cast<void*>(call_));
-          call_->set_rpc(move(rpc));
+          call_->rpcRef() = stub_->PrepareAsyncSayHello(&call_->context(), &cq_);
+          call_->rpcRef()->StartCall(reinterpret_cast<void*>(call_));
       }
       call_->write(user);
       return true;
