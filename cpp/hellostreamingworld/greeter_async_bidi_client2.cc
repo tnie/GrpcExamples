@@ -63,10 +63,8 @@ class AsyncBidiGreeterClient {
       : stub_(MultiGreeter::NewStub(channel)) {
     grpc_thread_.reset(
         new std::thread(std::bind(&AsyncBidiGreeterClient::GrpcThread, this)));
-    auto monitor = new Monitor(channel, &cq_);
-    constexpr auto second1s = std::chrono::seconds(1);
-    auto deadline = std::chrono::system_clock::now() + second1s;
-    channel->NotifyOnStateChange(GRPC_CHANNEL_READY, deadline, &cq_, monitor);
+    new Monitor(channel, &cq_);
+
   }
 
   // Similar to the async hello example in greeter_async_client but does not

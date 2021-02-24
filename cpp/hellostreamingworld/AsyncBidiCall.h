@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include <fmt\chrono.h>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -310,11 +311,15 @@ class Monitor : public AsyncClientCall
     grpc::CompletionQueue* cq_;
     grpc_connectivity_state state_ = GRPC_CHANNEL_READY;
     std::atomic<bool> run_;
+    // TODO 改用五秒甚至五分钟后，如何取消此定时器呢？如何 shutdown channel?
+    constexpr static std::chrono::seconds second1s_ = std::chrono::seconds(10);
 public:
     Monitor(std::shared_ptr<grpc::Channel> ch, grpc::CompletionQueue* cq) :
         _channel(ch), cq_(cq), run_(true)
     {
-
+        auto current_state = _channel->GetState(true);
+        auto deadline = std::chrono::system_clock::now() + second1s_;
+        _channel->NotifyOnStateChange(current_state, deadline, cq_, this);
     }
     void close() override
     {
@@ -337,7 +342,7 @@ public:
                 spdlog::warn("channel is idle");
                 break;
             case GRPC_CHANNEL_CONNECTING:
-                spdlog::debug("channel is connecting");
+                spdlog::info("channel is connecting");
                 break;
             case GRPC_CHANNEL_READY:
                 // 回调
@@ -356,10 +361,9 @@ public:
         else
         {
             // timeout
+            spdlog::info("timeout after {}.", second1s_);
         }
-        // TODO 改用五秒甚至五分钟后，如何取消此定时器呢？
-        constexpr auto second1s = std::chrono::seconds(1);
-        auto deadline = std::chrono::system_clock::now() + second1s;
+        auto deadline = std::chrono::system_clock::now() + second1s_;
         _channel->NotifyOnStateChange(state_, deadline, cq_, this);
     }
 };
