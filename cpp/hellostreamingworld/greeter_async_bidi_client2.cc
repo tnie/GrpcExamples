@@ -64,7 +64,7 @@ class AsyncBidiGreeterClient {
       : stub_(MultiGreeter::NewStub(channel)) {
     grpc_thread_.reset(
         new std::thread(std::bind(&AsyncBidiGreeterClient::GrpcThread, this)));
-    new Monitor(channel, &cq_);
+    new ChannelMonitor(channel, &cq_);
 
   }
 
@@ -73,13 +73,15 @@ class AsyncBidiGreeterClient {
   // that is notified when the server responds back (or when the stream is
   // closed). Returns false when the stream is requested to be closed.
   bool AsyncSayHello(const std::string& user) {
+      HelloRequest req;
+      req.set_name(user);
       if (0 == AsyncBidiCall::instance_count_)
       {
           call_ = new AsyncBidiCall(stub_);
           call_->rpcRef() = stub_->PrepareAsyncSayHello(&call_->context(), &cq_);
           call_->rpcRef()->StartCall(reinterpret_cast<void*>(call_));
       }
-      call_->write(user);
+      call_->write(req);
       return true;
   }
 
