@@ -117,11 +117,12 @@ using namespace hellostreamingworld;
 
 //TODO 保证（自我约束）对象的创建和销毁都在当前类中，否则更容易错用
 //私有化构造函数等
-class AsyncBidiCall final : public AsyncClientCall
+class AsyncBidiCall final : public AsyncClientCall, std::enable_shared_from_this<AsyncBidiCall>
 {
     typedef typename HelloReply ReturnT;
     typedef typename HelloRequest RequestT;
     using rpc_t = ::grpc::ClientAsyncReaderWriter< RequestT, ReturnT>;
+    using self_t = AsyncBidiCall;
 
     // 私有类。只用于 rpc->write()，不用于 read()/finish() 等异步方法。要求线程安全
     // 为什么要使用 AsyncWriteCall 类型？区分 cq 回调对应的是 rpc->write() 还是 rpc->read()，尤其是 eventStatus(false) 的时候
@@ -216,9 +217,21 @@ class AsyncBidiCall final : public AsyncClientCall
     ReturnT reply_; // 只在 cq 线程中使用则无需加锁
     std::unique_ptr< rpc_t> rpc_;
     std::weak_ptr<MultiGreeter::Stub> stub_wptr_;
+    std::shared_ptr<AsyncBidiCall> myself_;
+
+    AsyncBidiCall(std::shared_ptr<MultiGreeter::Stub> stub = nullptr) : stub_wptr_{ stub },
+        wrt_call_{ new AsyncWriteCall(this) }
+    {
+        assert(nullptr != wrt_call_);
+        //myself_ = shared_from_this();     // 尚未构造完毕
+    }
 public:
-    //谨慎调用接口，对象随时可能在另一线程释放
-    static std::atomic<size_t> instance_count_;
+    static std::shared_ptr<AsyncBidiCall> NewPtr()
+    {
+        auto ptr = std::shared_ptr<AsyncBidiCall>(new AsyncBidiCall);
+        ptr->myself_ = ptr;
+        return ptr;
+    }
     decltype(rpc_) & rpcRef()
     {
         return rpc_;
@@ -228,17 +241,8 @@ public:
         return state_;
     }
 
-    AsyncBidiCall(std::shared_ptr<MultiGreeter::Stub> stub) : stub_wptr_{ stub },
-        wrt_call_{ new AsyncWriteCall(this) }
-    {
-        assert(nullptr != wrt_call_);
-        ++instance_count_;
-    }
-    ~AsyncBidiCall()
-    {
-        --instance_count_;
-    }
-    // 若返回失败，请延迟重试。why is async-write so complex? https://github.com/grpc/grpc/issues/4007#issuecomment-152568219
+    // why is async-write so complex? https://github.com/grpc/grpc/issues/4007#issuecomment-152568219
+    //不保证发送成功
     void write(const RequestT& v2)
     {
         assert(wrt_call_);
@@ -288,9 +292,7 @@ public:
         case CallStatus::FINISH:
             //释放时（比如当 read / write 失败）如果有 outstanding write / read op 就会崩溃
             log_when_finish();
-            // 多线程竞争。另一线程执行 this->write() 可能崩溃...
-            // 通过错误配置 meta 可以复现
-            delete this;
+            myself_.reset();
             break;
         default:
             break;
@@ -310,6 +312,7 @@ public:
     ChannelMonitor(std::shared_ptr<grpc::Channel> ch, grpc::CompletionQueue* cq) :
         _channel(ch), cq_(cq), run_(true)
     {
+        // 底层重连尝试的间隔是 1-2-4-8-16- 增加的
         auto current_state = _channel->GetState(true);
         auto deadline = std::chrono::system_clock::now() + second1s_;
         _channel->NotifyOnStateChange(current_state, deadline, cq_, this);

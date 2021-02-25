@@ -52,13 +52,11 @@ using hellostreamingworld::MultiGreeter;
 
 std::set<AsyncClientCall*> AsyncClientCall::handle_;
 std::mutex AsyncClientCall::mt_;
-std::atomic<size_t> AsyncBidiCall::instance_count_;
 
 // NOTE: This is a complex example for an asynchronous, bidirectional streaming
 // client. For a simpler example, start with the
 // greeter_client/greeter_async_client first.
 class AsyncBidiGreeterClient {
-    AsyncBidiCall* call_ = nullptr;
  public:
   explicit AsyncBidiGreeterClient(std::shared_ptr<Channel> channel)
       : stub_(MultiGreeter::NewStub(channel)) {
@@ -75,13 +73,18 @@ class AsyncBidiGreeterClient {
   bool AsyncSayHello(const std::string& user) {
       HelloRequest req;
       req.set_name(user);
-      if (0 == AsyncBidiCall::instance_count_)
-      {
-          call_ = new AsyncBidiCall(stub_);
-          call_->rpcRef() = stub_->PrepareAsyncSayHello(&call_->context(), &cq_);
-          call_->rpcRef()->StartCall(reinterpret_cast<void*>(call_));
+      //尽可能使用单独一个 bidi-stream（有时服务端也不允许建立多个）
+      static std::weak_ptr<AsyncBidiCall> singleton_;
+      if (auto ptr = singleton_.lock()) {
+          ptr->write(req);  // 可能不发送
       }
-      call_->write(req);
+      else {
+          auto call_ = AsyncBidiCall::NewPtr();
+          call_->rpcRef() = stub_->PrepareAsyncSayHello(&call_->context(), &cq_);
+          call_->rpcRef()->StartCall(reinterpret_cast<void*>(call_.get()));
+          call_->write(req);  // 可能发送失败
+          singleton_ = call_;
+      }
       return true;
   }
 
