@@ -300,22 +300,36 @@ public:
     }
 };
 
-class ChannelMonitor : public AsyncClientCall
+// 有没有必要显式重连呢？——如果上层不监控网络变更，就没必要显式重连。甚至没有必要存在此类型。
+//每次 rpc 调用都会自动连接 GetState(true) 的，但用户怎么知道要重新请求呢？
+//用户一直重试吗（或者某层的 write() 持续重试）？还是等底层事件通知呢？
+//如果等事件的话，那还是要底层做重连的呀
+class ChannelStateMonitor final: public AsyncClientCall
 {
     std::shared_ptr<grpc::Channel> _channel;
     grpc::CompletionQueue* cq_;
     grpc_connectivity_state state_ = GRPC_CHANNEL_READY;
     std::atomic<bool> run_;
-    // TODO 改用五秒甚至五分钟后，如何取消此定时器呢？如何 shutdown channel?
-    constexpr static std::chrono::seconds second1s_ = std::chrono::seconds(10);
-public:
-    ChannelMonitor(std::shared_ptr<grpc::Channel> ch, grpc::CompletionQueue* cq) :
-        _channel(ch), cq_(cq), run_(true)
+    // to be a channel state observer when try_to_connect_ is false.
+    bool try_to_connect_;
+    std::shared_ptr<ChannelStateMonitor> myself_;
+    // 改用五秒甚至五分钟后，如何取消此定时器呢？取消不了，只能 short timeout + loop
+    constexpr static std::chrono::seconds second1s_ = std::chrono::seconds(2);
+    using monitor_func_t = std::function<void(grpc_connectivity_state old_state, grpc_connectivity_state new_state)>;
+    ChannelStateMonitor(std::shared_ptr<grpc::Channel> ch, grpc::CompletionQueue* cq, monitor_func_t m = nullptr) :
+        _channel(ch), cq_(cq), on_channel_state_change_(m), try_to_connect_(m != nullptr)
     {
-        // 底层重连尝试的间隔是 1-2-4-8-16- 增加的
-        auto current_state = _channel->GetState(true);
+        // 底层重连尝试的间隔是 1-2-4-8-16- 增加的，考虑是否使用
+        auto current_state = _channel->GetState(try_to_connect_);
         auto deadline = std::chrono::system_clock::now() + second1s_;
         _channel->NotifyOnStateChange(current_state, deadline, cq_, this);
+    }
+public:
+    static std::shared_ptr<ChannelStateMonitor> NewPtr(std::shared_ptr<grpc::Channel> ch, grpc::CompletionQueue* cq)
+    {
+        auto ptr = std::shared_ptr<ChannelStateMonitor>(new ChannelStateMonitor{ ch, cq });
+        ptr->myself_ = ptr;
+        return ptr;
     }
     void close() override
     {
@@ -325,43 +339,63 @@ public:
     {
         if (false == run_)
         {
-            delete this;
+            myself_.reset();
             return;
         }
         if (eventStatus)
         {
             // channel's state changed.
-            state_ = _channel->GetState(true);
-            switch (state_)
-            {
-            case GRPC_CHANNEL_IDLE:
-                spdlog::warn("channel is idle");
-                break;
-            case GRPC_CHANNEL_CONNECTING:
-                spdlog::info("channel is connecting");
-                break;
-            case GRPC_CHANNEL_READY:
-                // 回调
-                spdlog::info("channel is ready for work");
-                break;
-            case GRPC_CHANNEL_TRANSIENT_FAILURE:
-                spdlog::warn("channel has seen a failure but expects to recover");
-                break;
-            case GRPC_CHANNEL_SHUTDOWN: // TODO shutdown 之后不应再调用 NotifyOnStateChange，但没有找到方法 shutdown channel
-                spdlog::error("channel has seen a failure that it cannot recover from");
-                break;
-            default:
-                break;
-            }
+            auto current_state = _channel->GetState(try_to_connect_);
+            spdlog::info("channel_state_change: {}->{}. {}", state_, current_state, comment(current_state));
+            if (on_channel_state_change_)
+                on_channel_state_change_(state_, current_state);
+            state_ = current_state;
         }
         else
         {
             // timeout
-            spdlog::info("timeout after {}.", second1s_);
+            spdlog::info("NotifyOnStateChange() timeout after {}.", second1s_);
         }
         auto deadline = std::chrono::system_clock::now() + second1s_;
         _channel->NotifyOnStateChange(state_, deadline, cq_, this);
     }
+private:
+    static std::string comment(grpc_connectivity_state state)
+    {
+        //Copy from grpc_connectivity_state
+        static std::map<int, char const * const> state2comment = {
+            { GRPC_CHANNEL_IDLE, "channel is idle" },
+            { GRPC_CHANNEL_CONNECTING, "channel is connecting" },
+            { GRPC_CHANNEL_READY,"channel is ready for work " },
+            { GRPC_CHANNEL_TRANSIENT_FAILURE, "channel has seen a failure but expects to recover" },
+            { GRPC_CHANNEL_SHUTDOWN, "channel has seen a failure that it cannot recover from " }
+        };
+        auto ctor = state2comment.find(state);
+        if (ctor != state2comment.end())
+            return ctor->second;
+        return std::string{};
+    }
+    monitor_func_t on_channel_state_change_ ;   // 暂时未使用
 };
 
+// 使 ch 自动重连。返回其之前是否启用了自动重连。要求 ChannelStateMonitor 支持自动重连才行
+static bool enable_auto_reconnect(std::shared_ptr<grpc::Channel> ch, grpc::CompletionQueue* cq)
+{
+    // TODO 是否会影响 channel 析构
+    static std::map<std::shared_ptr<grpc::Channel>, std::weak_ptr<ChannelStateMonitor>> channel2monitor;
+    auto ctor = channel2monitor.find(ch);
+    if (ctor != channel2monitor.cend())
+    {
+        if (auto ptr = ctor->second.lock())
+        {
+            return true;
+        }
+        else
+        {
+            channel2monitor.erase(ctor);
+        }
+    }
+    channel2monitor[ch] = ChannelStateMonitor::NewPtr(ch, cq);
+    return false;
+}
 

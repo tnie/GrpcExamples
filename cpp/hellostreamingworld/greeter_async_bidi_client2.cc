@@ -62,7 +62,6 @@ class AsyncBidiGreeterClient {
       : stub_(MultiGreeter::NewStub(channel)) {
     grpc_thread_.reset(
         new std::thread(std::bind(&AsyncBidiGreeterClient::GrpcThread, this)));
-    new ChannelMonitor(channel, &cq_);
 
   }
 
@@ -80,7 +79,9 @@ class AsyncBidiGreeterClient {
       }
       else {
           auto call_ = AsyncBidiCall::NewPtr();
+          assert(stub_ != nullptr);
           call_->rpcRef() = stub_->PrepareAsyncSayHello(&call_->context(), &cq_);
+          // 无需显式建立连接，每次调用 rpc 会自动连接
           call_->rpcRef()->StartCall(reinterpret_cast<void*>(call_.get()));
           call_->write(req);  // 可能发送失败
           singleton_ = call_;

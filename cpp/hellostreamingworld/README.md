@@ -12,9 +12,28 @@
 - hello-server 写两次时，async-client demo 根本就处理不了
 - 调试 grpc 心跳机制，调试其联网状态
 
+## NotifyOnStateChange
+
+调用 `NotifyOnStateChange()` 或者 `WaitForConnected()` 接口输入较大超时时长的时候，如何取消（退出）呢？ 现在只能阻塞其所在线程等待其返回。
+
+尝试通过 shutdown channel 来回调也是无解的：
+
+> shutdown channel? 但没有接口 shutdown，只能依赖其析构。但获取 state 需要有效的 channel，所以无解。
+
+从互联网上、从服务端同事那里都没有找到有效的解决方案，从 grpc-issues 里找到了 grpc 目前的确不支持相关特性的描述：
+
+-  [C++ API to close/disconnect a grpc::Channel, canceling all calls][gi21926] 
+-  从 [Provide a way to cancel NotifyOnStateChange ][gi21948]，
+-  再追到 [Afford a means of cancelling an in-progress watch_connectivity_state][gi3064]
+
+我自己摸索的，服务端同事在使用的，和上述 issue 里提到的 workaround 都是：使用小的时间间隔，轮询判断。
+
 [1]:https://github.com/tnie/quote-demo/issues/9
 [2]:https://github.com/grpc/grpc/issues/9593#issuecomment-277946137
 [cm]:CMakeLists.txt
+[gi21926]:https://github.com/grpc/grpc/issues/21926
+[gi21948]:https://github.com/grpc/grpc/issues/21948
+[gi3064]:https://github.com/grpc/grpc/issues/3064
 
 # gRPC C++ Hello World Tutorial
 
