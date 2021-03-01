@@ -132,6 +132,7 @@ class AsyncBidiCall final : public AsyncClientCall, std::enable_shared_from_this
     // 为什么要使用 AsyncWriteCall 类型？区分 cq 回调对应的是 rpc->write() 还是 rpc->read()，尤其是 eventStatus(false) 的时候
     class AsyncWriteCall final : public AsyncClientCall
     {
+        std::atomic_bool has_response_ = false;
         const std::string uuid_;
         const RequestT request_;
         AsyncBidiCall * owner_ = nullptr;
@@ -147,14 +148,22 @@ class AsyncBidiCall final : public AsyncClientCall, std::enable_shared_from_this
         {
             if (eventStatus)
             {
-                spdlog::info("write {} successfully.", uuid_);
+                spdlog::info("write {} successfully. {}", uuid_, request_.DebugString());
                 owner_->write_next();
             }
             else
             {
-                spdlog::warn("write {} failed.", uuid_);
+                spdlog::warn("write {} failed. {}", uuid_, request_.DebugString());
                 owner_->stop_write();
             }
+            has_response_ = true;
+        }
+        ~AsyncWriteCall()
+        {
+            if (!has_response_)
+                spdlog::warn("~write {} not executed. {}", uuid_, request_.DebugString());
+            else
+                spdlog::debug("~write {} executed. {}", uuid_, request_.DebugString());
         }
     };
     std::mutex mt_; // 针对 wrt_call_buffer_, wrt_call_ 和 wrt_state_
