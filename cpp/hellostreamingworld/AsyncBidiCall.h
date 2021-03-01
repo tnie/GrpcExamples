@@ -124,106 +124,90 @@ class AsyncBidiCall final : public AsyncClientCall, std::enable_shared_from_this
     using rpc_t = ::grpc::ClientAsyncReaderWriter< RequestT, ReturnT>;
     using self_t = AsyncBidiCall;
 
+    // can write by rpc? rpc != nullptr && request_ is idle( need lock).
+    //=channel is connected && rpc has been assigned && there is no outstanding write opr
+    enum class WriteState { IDLE, WRITING, STOP };
+    WriteState wrt_state_ = WriteState::STOP;
     // 私有类。只用于 rpc->write()，不用于 read()/finish() 等异步方法。要求线程安全
     // 为什么要使用 AsyncWriteCall 类型？区分 cq 回调对应的是 rpc->write() 还是 rpc->read()，尤其是 eventStatus(false) 的时候
     class AsyncWriteCall final : public AsyncClientCall
     {
-        // can write by rpc? rpc != nullptr && request_ is idle( need lock).
-        //=channel is connected && rpc has been assigned && there is no outstanding write opr
-        enum class WriteState { IDLE, WRITING, STOP };
-        WriteState wrt_state_ = WriteState::STOP;
+        const std::string uuid_;
+        const RequestT request_;
+        AsyncBidiCall * owner_ = nullptr;
     public:
-        AsyncWriteCall(AsyncBidiCall* owner) : owner_(owner), rpc_{ owner->rpcRef() }
+        AsyncWriteCall(AsyncBidiCall* owner, std::string uuid, RequestT request) :
+            uuid_(std::move(uuid)), request_(std::move(request)), owner_(owner)
         {
             assert(nullptr != owner_);
         }
-        void write(RequestT v2)
-        {
-            std::lock_guard<std::mutex> lg(mt_);
-            //writable, /wait owner's CREATE event
-            if (WriteState::IDLE == wrt_state_)
-            {
-                request_.Swap(&v2);
-                wrt_state_ = WriteState::WRITING;
-                //if rpc_ is nullptr, check (wrt_state_ = WriteState::IDLE)
-                assert(rpc_);
-                rpc_->Write(request_, this);
-            }
-            else
-            {
-                request_buffer_.push(v2);
-            }
-        }
-        void write_next()   // 限于 HandleResponse() 中使用
-        {
-            std::lock_guard<std::mutex> lg(mt_);
-            if (request_buffer_.empty())
-            {
-                wrt_state_ = WriteState::IDLE;   // make writable
-            }
-            else
-            {
-                request_.Swap(&request_buffer_.front());
-                request_buffer_.pop();
-                wrt_state_ = WriteState::WRITING;
-                assert(rpc_);
-                rpc_->Write(request_, this);
-            }
-        }
+        const RequestT& request() const { return request_; }
         //除了在 completion queue 中回调，禁止在其他场景调用
         void HandleResponse(bool eventStatus) override
         {
             if (eventStatus)
             {
-                write_next();
+                spdlog::info("write {} successfully.", uuid_);
+                owner_->write_next();
             }
             else
             {
-                do {
-                    std::lock_guard<std::mutex> lg(mt_);
-                    wrt_state_ = WriteState::STOP;
-                } while (false);
-                FinishOnce();
+                spdlog::warn("write {} failed.", uuid_);
+                owner_->stop_write();
             }
         }
-
-        // 因为需要使用嵌套类的锁保证线程安全，所以没有作为 owner's member function
-        // 只会用在 cq 的回调中，所以 owner's state 不用额外的锁
-        void FinishOnce()   // 限于 HandleResponse() 中使用
-        {
-            //互斥锁只针对 this->wrt_state
-            std::lock_guard<std::mutex> lg(mt_);
-            // owner's state 不存在竞争
-            if ((WriteState::WRITING != wrt_state_) && (CallStatus::FINISH == owner_->state()))
-            {
-                auto & status = owner_->status();
-                rpc_->Finish(&status, owner_);    // if Finish() again/twice, bang...
-            }
-            else
-            {
-                // there is outstanding write/read. waiting...
-            }
-        }
-
-    private:
-        AsyncBidiCall * owner_ = nullptr;
-        std::unique_ptr<rpc_t>& rpc_;   // owner_->rpcRef();
-        std::mutex mt_; // 针对 wrt_state_, request_ 和 request_buffer_
-        RequestT request_;
-        std::queue<RequestT> request_buffer_;
     };
+    std::mutex mt_; // 针对 wrt_call_buffer_, wrt_call_ 和 wrt_state_
     std::unique_ptr<AsyncWriteCall> wrt_call_;
+    std::queue<std::unique_ptr<AsyncWriteCall>> wrt_call_buffer_;
 
     ReturnT reply_; // 只在 cq 线程中使用则无需加锁
     std::unique_ptr< rpc_t> rpc_;
     std::weak_ptr<MultiGreeter::Stub> stub_wptr_;
     std::shared_ptr<AsyncBidiCall> myself_;
 
-    AsyncBidiCall(std::shared_ptr<MultiGreeter::Stub> stub = nullptr) : stub_wptr_{ stub },
-        wrt_call_{ new AsyncWriteCall(this) }
+    AsyncBidiCall(std::shared_ptr<MultiGreeter::Stub> stub = nullptr) : stub_wptr_{ stub }
     {
-        assert(nullptr != wrt_call_);
         //myself_ = shared_from_this();     // 尚未构造完毕
+    }
+    void write_next()   // 限于 HandleResponse() 中使用
+    {
+        std::lock_guard<std::mutex> lg(mt_);
+        if (wrt_call_buffer_.empty())
+        {
+            wrt_state_ = WriteState::IDLE;   // make writable
+        }
+        else
+        {
+            wrt_call_.swap(wrt_call_buffer_.front());
+            wrt_call_buffer_.pop();
+            wrt_state_ = WriteState::WRITING;
+            assert(rpc_);
+            rpc_->Write(wrt_call_->request(), wrt_call_.get());
+        }
+    }
+    void stop_write()
+    {
+        do {
+            std::lock_guard<std::mutex> lg(mt_);
+            wrt_state_ = WriteState::STOP;
+        } while (false);
+        this->FinishOnce();
+    }
+    void FinishOnce()   // 限于 HandleResponse() 中使用
+    {
+        //互斥锁只针对 this->wrt_state
+        // 只会用在 cq 的回调中，state_ 不存在竞争，所以 state_ 不用额外的锁
+        std::lock_guard<std::mutex> lg(mt_);
+        if ((WriteState::WRITING != wrt_state_) && (CallStatus::FINISH == state_))
+        {
+            auto & status = AsyncClientCall::status();
+            rpc_->Finish(&status, this);    // if Finish() again/twice, bang...
+        }
+        else
+        {
+            // there is outstanding write/read. waiting...
+        }
     }
 public:
     static std::shared_ptr<AsyncBidiCall> NewPtr()
@@ -236,18 +220,26 @@ public:
     {
         return rpc_;
     }
-    CallStatus state() const
+    // why is async-write so complex? https://github.com/grpc/grpc/issues/4007#issuecomment-152568219
+    //不保证发送成功。TODO 如果用户传入 uuid 则返回 uuid，若 uuid 为空，则内部生成 uuid 后返回
+    void write(RequestT v2, std::string uuid = "")
     {
-        return state_;
+        std::lock_guard<std::mutex> lg(mt_);
+        //writable, /wait owner's CREATE event
+        if (WriteState::IDLE == wrt_state_)
+        {
+            wrt_call_.reset(new AsyncWriteCall(this, uuid, v2));
+            wrt_state_ = WriteState::WRITING;
+            //if rpc_ is nullptr, check (wrt_state_ = WriteState::IDLE)
+            assert(rpc_);
+            rpc_->Write(wrt_call_->request(), wrt_call_.get());
+        }
+        else
+        {
+            wrt_call_buffer_.emplace(new AsyncWriteCall(this, uuid, v2));
+        }
     }
 
-    // why is async-write so complex? https://github.com/grpc/grpc/issues/4007#issuecomment-152568219
-    //不保证发送成功
-    void write(const RequestT& v2)
-    {
-        assert(wrt_call_);
-        wrt_call_->write(v2);
-    }
     //除了在 completion queue 中回调，禁止在其他场景调用
     void HandleResponse(bool eventStatus) override
     {
@@ -265,8 +257,7 @@ public:
                 if (nullptr == rpc_) {
                     throw std::logic_error("rpc_ is nullptr. You should replace AsyncRpc() with PrepareAsyncRpc().");
                 }
-                assert(wrt_call_);
-                wrt_call_->write_next();
+                this->write_next();
                 state_ = CallStatus::PROCESS;
                 rpc_->Read(&reply_, this);
             }
@@ -286,7 +277,7 @@ public:
             else
             {
                 state_ = CallStatus::FINISH;
-                wrt_call_->FinishOnce();
+                this->FinishOnce();
             }
             break;
         case CallStatus::FINISH:
