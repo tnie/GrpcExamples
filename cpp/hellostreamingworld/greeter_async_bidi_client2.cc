@@ -96,7 +96,7 @@ class AsyncBidiGreeterClient {
       {
           std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
-    std::cout << "Shutting down client...." << std::endl;
+      spdlog::info("Shutting down client....");
     cq_.Shutdown();
     grpc_thread_->join();
   }
@@ -114,7 +114,7 @@ class AsyncBidiGreeterClient {
       // tells us whether there is any kind of event or the cq_ is shutting
       // down.
       if (!cq_.Next(&got_tag, &ok)) {
-        std::cerr << "Client stream closed. Quitting" << std::endl;
+          spdlog::error("Client stream closed. Quitting");
         break;
       }
       AsyncClientCall* ptr = reinterpret_cast<AsyncClientCall*>(got_tag);
@@ -142,12 +142,12 @@ int main(int argc, char** argv) {
 
   std::string text;
   while (true) {
-    std::cout << "Enter text (type quit to end): ";
+      spdlog::info("Enter text (type quit to end): ");
     std::cin >> text;
 
     // Async RPC call that sends a message and awaits a response.
     if (!greeter.AsyncSayHello(text) || text == "quit") {
-      std::cout << "Quitting." << std::endl;
+        spdlog::info("Quitting.");
       break;
     }
   }
