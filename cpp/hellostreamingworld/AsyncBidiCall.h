@@ -313,7 +313,7 @@ public:
 };
 
 // 有没有必要显式重连呢？——如果上层不监控网络变更，就没必要显式重连。甚至没有必要存在此类型。
-//每次 rpc 调用都会自动连接 GetState(true) 的，但用户怎么知道要重新请求呢？
+//每次 rpc 调用都会先建立连接 GetState(true) 的，但用户怎么知道要重新请求呢？
 //用户一直重试吗（或者某层的 write() 持续重试）？还是等底层事件通知呢？
 //如果等事件的话，那还是要底层做重连的呀
 class ChannelStateMonitor final: public AsyncClientCall
@@ -323,7 +323,7 @@ class ChannelStateMonitor final: public AsyncClientCall
     grpc_connectivity_state state_ = GRPC_CHANNEL_READY;
     std::atomic<bool> run_;
     // to be a channel state observer when try_to_connect_ is false.
-    bool try_to_connect_;
+    const bool try_to_connect_;
     std::shared_ptr<ChannelStateMonitor> myself_;
     // 改用五秒甚至五分钟后，如何取消此定时器呢？取消不了，只能 short timeout + loop
     constexpr static std::chrono::seconds second1s_ = std::chrono::seconds(2);

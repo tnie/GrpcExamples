@@ -79,7 +79,7 @@ class GreeterClient {
 
       HelloRequest msg;
       msg.set_name("niel");
-      msg.set_num_greetings(std::to_string(i));
+      msg.set_num_greetings(i);
       if (pkg.stream->Write(msg))
       {
           spdlog::info("write {}@{}", msg.name(), i);

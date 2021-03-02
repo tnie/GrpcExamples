@@ -72,6 +72,7 @@ class AsyncBidiGreeterClient {
   bool AsyncSayHello(const std::string& user) {
       HelloRequest req;
       req.set_name(user);
+      req.set_num_greetings(user.size());
       //尽可能使用单独一个 bidi-stream（有时服务端也不允许建立多个）
       static std::weak_ptr<AsyncBidiCall> singleton_;
       if (auto ptr = singleton_.lock()) {
