@@ -1,4 +1,7 @@
 ﻿#pragma once
+#include <boost\uuid\uuid.hpp>
+#include <boost\uuid\uuid_io.hpp>
+#include <boost\uuid\random_generator.hpp>
 #include <fmt\chrono.h>
 #include <atomic>
 #include <chrono>
@@ -10,6 +13,9 @@
 #include <exception>
 #include "hellostreamingworld.pb.h"
 #include "hellostreamingworld.grpc.pb.h"
+
+#pragma comment(lib, "bcrypt.lib")
+
 //AsyncClientCall Interface
 class AsyncClientCall
 {
@@ -230,9 +236,14 @@ public:
         return rpc_;
     }
     // why is async-write so complex? https://github.com/grpc/grpc/issues/4007#issuecomment-152568219
-    //不保证发送成功。TODO 如果用户传入 uuid 则返回 uuid，若 uuid 为空，则内部生成 uuid 后返回
-    void write(RequestT v2, std::string uuid = "")
+    //不保证发送成功。如果用户传入 uuid 则返回 uuid，若 uuid 为空，则内部生成 uuid 后返回
+    std::string write(RequestT v2, std::string uuid = "")
     {
+        if (uuid.empty()) {
+            auto tmp = boost::uuids::random_generator();
+            uuid = boost::uuids::to_string(tmp());
+        }
+        const std::string uuidCopy = uuid;
         std::lock_guard<std::mutex> lg(mt_);
         //writable, /wait owner's CREATE event
         if (WriteState::IDLE == wrt_state_)
@@ -247,6 +258,7 @@ public:
         {
             wrt_call_buffer_.emplace(new AsyncWriteCall(this, uuid, v2));
         }
+        return uuidCopy;
     }
 
     //除了在 completion queue 中回调，禁止在其他场景调用
