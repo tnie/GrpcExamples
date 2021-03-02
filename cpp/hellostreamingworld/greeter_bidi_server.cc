@@ -43,41 +43,34 @@ class GreeterServiceImpl final : public MultiGreeter::Service {
     Status SayHello(ServerContext* context,
                    ServerReaderWriter<HelloReply, HelloRequest>* stream) override {
     HelloRequest note;
-    std::thread wrth;
+    std::list<std::thread> threads;
     std::atomic<bool> done = false;
     while (stream->Read(&note)) {
         spdlog::info("Read: {}@{}", note.name(), note.num_greetings());
 
-        if (wrth.get_id() == std::thread::id())
-        {
-            wrth = std::thread([stream, note, &done]() {
-                size_t num = 2, count = 1;
-                while(true)
-                {
-                    HelloReply reply;
-                    reply.set_message(fmt::format("Hello {}@{}*{}", note.name(), note.num_greetings(), ++count));
-                    stream->Write(reply);
-                    spdlog::info("Write: {}", reply.message());
-                    //return;
-                    // wait for...
-                    for (size_t i = 0; i < num; i++)
-                    {
-                        if (done.load())
-                        {
-                            return;
-                        }
-                        using namespace std::chrono_literals;
-                        std::this_thread::sleep_for(5s);
-                    }
-                    //num *= 2;
-                }
-            });
-        }
+        auto wrth = std::thread([stream, note, &done]() {
+            const size_t num = note.num_greetings();
+            size_t i = 0;
+            HelloReply reply;
+            reply.set_message(fmt::format("Hello {}@{}/{}", note.name(), i, note.num_greetings()));
+            // TODO Write() 是否线程安全？
+            while (i < num && stream->Write(reply))
+            {
+                spdlog::info("Write: {}", reply.message());
+                i++;
+                reply.set_message(fmt::format("Hello {}@{}/{}", note.name(), i, note.num_greetings()));
+                using namespace std::chrono_literals;
+                std::this_thread::sleep_for(3s);
+            }
+        });
+        threads.push_back(std::move(wrth));
     }
     done.store(true);
-    if (wrth.joinable())
-    {
-        wrth.join();
+    for (auto & wrth : threads) {
+        if (wrth.joinable())
+        {
+            wrth.join();
+        }
     }
 
     return Status::OK;
