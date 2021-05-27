@@ -44,20 +44,22 @@ class GreeterClient {
         ClientContext context;
         std::shared_ptr<ClientReaderWriter<HelloRequest, HelloReply> > stream;
         std::thread thRecv;
-    } pkg;
+    };
+
+    std::shared_ptr<StreamPkg> pkg;
 
  public:
   GreeterClient(std::shared_ptr<Channel> channel)
       : _channel(channel), stub_(MultiGreeter::NewStub(channel))
   {
-      //_monitor.swap(std::thread([this]() {monitor(); }));
+      _monitor.swap(std::thread([this]() {monitor(); }));
   }
 
   ~GreeterClient()
   {
-      if (pkg.thRecv.joinable())
+      if (pkg && pkg->thRecv.joinable())
       {
-          pkg.thRecv.join();
+          pkg->thRecv.join();
       }
       _run.store(false);
       if (_monitor.joinable())
@@ -67,46 +69,40 @@ class GreeterClient {
   }
 
   void SayHello(size_t i) {
-      if (nullptr == pkg.stream)
+      if (nullptr == pkg)
+          pkg = std::make_shared<StreamPkg>();
+      if (nullptr == pkg->stream)
       {
-          pkg.stream = stub_->SayHello(&(pkg.context));
+          pkg->stream = stub_->SayHello(&(pkg->context));
 
           /*if (_channel->GetState(false) == GRPC_CHANNEL_READY)
-              pkg.stream = stub_->SayHello(&(pkg.context));
+          pkg.stream = stub_->SayHello(&(pkg.context));
           else
-              return;*/
+          return;*/
       }
+
 
       HelloRequest msg;
       msg.set_name("niel");
       msg.set_num_greetings(i);
-      if (pkg.stream->Write(msg))
+      if (pkg->stream->Write(msg))
       {
           spdlog::info("write {}@{}", msg.name(), i);
       }
       else
       {
           spdlog::error("write failed: {}@{}", msg.name(), i);
+          if (pkg) {
+              pkg->stream->WritesDone();
+              pkg->context.TryCancel();
+          }
+          pkg = nullptr;
+          return;
       }
 
-    if (pkg.thRecv.get_id() == std::thread::id())
+    if (pkg->thRecv.get_id() == std::thread::id())
     {
-        pkg.thRecv = std::thread([this]() {
-            HelloReply server_note;
-            auto & stream = pkg.stream;
-            while (stream->Read(&server_note)) {
-                spdlog::info("Got message: {}", server_note.message());
-            }
-            Status status = stream->Finish();
-            if (!status.ok()) {
-                spdlog::error("RouteChat rpc failed. {}:{},{}",
-                    status.error_code(), status.error_message(), status.error_details());
-            }
-            else
-            {
-                spdlog::info("done");
-            }
-        });
+
     }
 
     /*using namespace std::chrono_literals;
@@ -125,17 +121,18 @@ private:
           switch (current_state)
           {
           case GRPC_CHANNEL_IDLE:
-              spdlog::warn("channel is idle");
+              spdlog::warn(">> GRPC_CHANNEL_IDLE");
               if (shutdn == false)
               {
               }
               shutdn = true;
               break;
           case GRPC_CHANNEL_CONNECTING:
-              spdlog::info("channel is connecting");
+              spdlog::info(">> GRPC_CHANNEL_CONNECTING");
               break;
           case GRPC_CHANNEL_READY:
               // 回调
+              spdlog::info(">> GRPC_CHANNEL_READY");
               if (shutdn)
               {
                   spdlog::info("channel is ready for work");
@@ -143,16 +140,18 @@ private:
               }
               break;
           case GRPC_CHANNEL_TRANSIENT_FAILURE:
-              spdlog::warn("channel has seen a failure but expects to recover");
+              spdlog::warn(">> GRPC_CHANNEL_TRANSIENT_FAILURE");
               break;
           case GRPC_CHANNEL_SHUTDOWN:
-              spdlog::error("channel has seen a failure that it cannot recover from");
+              spdlog::error(">> GRPC_CHANNEL_SHUTDOWN");
               break;
           default:
               break;
           }
           auto deadline = std::chrono::system_clock::now() + std::chrono::seconds(10);
+          spdlog::info("wait for state change or timeout 10s...");
           _channel->WaitForStateChange(current_state, deadline);
+          spdlog::info("state change / 10s.");
       }
   }
  private:
@@ -175,14 +174,16 @@ int main(int argc, char** argv) {
     // 1 不发数据帧之前? 2 不收数据帧之前? 的最小 ping 间隔
     args.SetInt(GRPC_ARG_HTTP2_MIN_SENT_PING_INTERVAL_WITHOUT_DATA_MS, 1000 * 21);
   GreeterClient greeter(grpc::CreateCustomChannel(
-      "192.168.40.130:50051", grpc::InsecureChannelCredentials(), args)); // 192.168.40.130
+      "8.131.114.171:50051", grpc::InsecureChannelCredentials(), args)); // 192.168.40.130
+  //8.131.114.171
+  //127.0.0.1
   size_t i = 0;
-  //while (true)
+  while (true)
   {
       ++i;
       greeter.SayHello(i);
       using namespace std::chrono_literals;
-      std::this_thread::sleep_for(17s);
+      std::this_thread::sleep_for(7s);
   }
 
   getchar();

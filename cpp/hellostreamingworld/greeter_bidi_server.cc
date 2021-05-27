@@ -62,9 +62,16 @@ class GreeterServiceImpl final : public MultiGreeter::Service {
                 using namespace std::chrono_literals;
                 std::this_thread::sleep_for(3s);
             }
+            if (i>= num) {
+                spdlog::info("Write all. {}/{}", i, num);
+            }
+            else {
+                spdlog::warn("Write failed. {}/{}", i, num);
+            }
         });
         threads.push_back(std::move(wrth));
     }
+    spdlog::warn("Read failed");
     done.store(true);
     for (auto & wrth : threads) {
         if (wrth.joinable())
